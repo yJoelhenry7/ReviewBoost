@@ -1,0 +1,174 @@
+// Local dev uses SQLite. For production switch `provider` to "postgresql"
+// and point DATABASE_URL at Supabase/Neon (see README). No enums are used so
+// the same schema works on both.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Business {
+  id               String   @id @default(cuid())
+  name             String
+  slug             String   @unique
+  city             String?
+  placeId          String? // Google Place ID
+  reviewUrl        String? // overrides the URL derived from placeId
+  ownerPhone       String? // E.164 without '+', e.g. 919876543210
+  language         String   @default("en") // en | te
+  funnelEnabled    Boolean  @default(true) // star-rating step before Google
+  plan             String   @default("trial") // trial | starter | growth
+  trialEndsAt      DateTime
+  monthlyMsgLimit  Int      @default(300)
+  razorpaySubId    String?
+  subscriptionStatus String @default("trialing") // trialing | active | past_due | canceled
+  googleRating     Float?
+  googleReviewCount Int?
+  lastSyncedAt     DateTime?
+  createdAt        DateTime @default(now())
+
+  users          User[]
+  customers      Customer[]
+  requests       ReviewRequest[]
+  ratings        Rating[]
+  googleReviews  GoogleReview[]
+  messages       MessageLog[]
+  events         LinkEvent[]
+  snapshots      ReviewSnapshot[]
+}
+
+/// One row per business per day, used for "reviews gained this month" on the dashboard.
+model ReviewSnapshot {
+  id         String   @id @default(cuid())
+  businessId String
+  day        String // YYYY-MM-DD
+  count      Int
+  rating     Float?
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, day])
+}
+
+model User {
+  id           String   @id @default(cuid())
+  businessId   String
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         String   @default("OWNER") // OWNER | RECEPTIONIST
+  createdAt    DateTime @default(now())
+
+  business Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  requests ReviewRequest[]
+}
+
+model Customer {
+  id         String   @id @default(cuid())
+  businessId String
+  name       String
+  phone      String // normalized, digits only with country code
+  consent    Boolean  @default(false)
+  optedOut   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  business Business        @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  requests ReviewRequest[]
+
+  @@unique([businessId, phone])
+}
+
+model ReviewRequest {
+  id             String    @id @default(cuid())
+  businessId     String
+  customerId     String
+  createdById    String?
+  code           String    @unique // tracking token used in the link
+  status         String    @default("queued") // queued | sent | failed | clicked | rated
+  sentAt         DateTime?
+  clickedAt      DateTime?
+  ratedAt        DateTime?
+  reminderDueAt  DateTime?
+  reminderSentAt DateTime?
+  createdAt      DateTime  @default(now())
+
+  business  Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  createdBy User?     @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  ratings   Rating[]
+
+  @@index([businessId, createdAt])
+  @@index([reminderDueAt])
+}
+
+model Rating {
+  id             String   @id @default(cuid())
+  businessId     String
+  requestId      String?
+  stars          Int
+  feedback       String?
+  contactName    String?
+  contactPhone   String?
+  source         String   @default("qr") // qr | whatsapp
+  wentToGoogle   Boolean  @default(false)
+  resolved       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  business Business       @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  request  ReviewRequest? @relation(fields: [requestId], references: [id], onDelete: SetNull)
+
+  @@index([businessId, createdAt])
+}
+
+model GoogleReview {
+  id              String    @id @default(cuid())
+  businessId      String
+  externalId      String // Google review id (or hash for manual entries)
+  authorName      String
+  stars           Int
+  text            String?
+  reviewedAt      DateTime  @default(now())
+  suggestedReply  String?
+  replyText       String?
+  replyStatus     String    @default("pending") // pending | approved | posted | skipped
+  approveToken    String    @unique
+  alertedAt       DateTime?
+  createdAt       DateTime  @default(now())
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, externalId])
+}
+
+model MessageLog {
+  id         String   @id @default(cuid())
+  businessId String
+  to         String
+  kind       String // review_request | review_reminder | owner_alert | review_alert
+  body       String
+  status     String // sent | failed | delivered | read
+  providerId String?
+  error      String?
+  createdAt  DateTime @default(now())
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([businessId, createdAt])
+  @@index([providerId])
+}
+
+model LinkEvent {
+  id         String   @id @default(cuid())
+  businessId String
+  requestId  String?
+  type       String // scan | click | google
+  createdAt  DateTime @default(now())
+
+  business Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@index([businessId, type, createdAt])
+}
